@@ -1,0 +1,25 @@
+# API Key 配置文件
+# 格式: provider:api_key
+# 支持: deepseek, siliconflow, moonshot, zhipu, openrouter
+#
+# 你也可以不写 provider，脚本会自动识别（sk- 开头优先识别为 deepseek）
+#
+# 示例 (把下面的 key 替换成你自己的):
+
+# DeepSeek
+deepseek:sk-your-deepseek-api-key-here
+
+# 硅基流动
+siliconflow:sk-your-siliconflow-api-key-here
+
+# 月之暗面 (Kimi)
+moonshot:moonshot-your-moonshot-api-key-here
+
+# 智谱AI
+zhipu:your-zhipu-api-key-here
+
+# OpenRouter (需要 Management Key，不是普通 API Key)
+openrouter:sk-or-your-openrouter-management-key-here
+
+# 也可以只写 key，让脚本自动识别
+# sk-auto-detected-key-here
