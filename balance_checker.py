@@ -4,8 +4,10 @@ API Key 余额检测器
 支持: DeepSeek / 硅基流动 / 月之暗面 / 智谱AI / OpenRouter
 """
 
+import json
 import sys
 import time
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -146,6 +148,278 @@ def mask_key(key: str, keep_head: int = 6, keep_tail: int = 4) -> str:
         mid = len(key) // 2
         return key[:mid] + "***" + key[mid:]
     return key[:keep_head] + "***" + key[-keep_tail:]
+
+
+# ============================================================
+# 历史记录 & 余额变化追踪
+# ============================================================
+
+import hashlib
+import json
+
+HISTORY_FILE = "balance_history.json"
+
+# Unicode 火花条字符（8 级）
+_SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def _key_id(api_key: str) -> str:
+    """用 SHA256 前 12 位标识一个 Key（不存完整 Key）。"""
+    return hashlib.sha256(api_key.encode()).hexdigest()[:12]
+
+
+def _extract_num_balance(result: dict) -> float | None:
+    """从结果中提取数值型余额，失败返回 None。"""
+    if result["status"] != "ok":
+        return None
+    bls = result.get("balances", [])
+    if not bls:
+        return None
+    b = bls[0]
+    pid = result.get("provider_id", "")
+    try:
+        if pid == "deepseek":
+            return float(b.get("total", 0))
+        elif pid == "siliconflow":
+            return float(b.get("total", 0))
+        elif pid == "moonshot":
+            return float(b.get("available_balance", 0))
+        elif pid == "zhipu":
+            return float(b.get("remain", 0))
+        elif pid == "openrouter":
+            return float(b.get("total_purchased", 0)) - float(b.get("total_used", 0))
+        for v in b.values():
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                continue
+        return None
+    except (ValueError, TypeError):
+        return None
+
+
+def load_history() -> list[dict]:
+    """加载历史记录文件。"""
+    path = Path(HISTORY_FILE)
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+    return []
+
+
+def save_history(records: list[dict]):
+    """写入历史记录文件。"""
+    Path(HISTORY_FILE).write_text(
+        json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def append_history(records: list[dict], results: list[dict]):
+    """将本次查询结果追加到历史记录中。"""
+    now = datetime.now().isoformat(timespec="seconds")
+    for r in results:
+        records.append({
+            "ts": now,
+            "kid": _key_id(r["key"]),
+            "provider": r["provider"],
+            "pid": r.get("provider_id", ""),
+            "balance": _extract_num_balance(r),
+            "status": r["status"],
+        })
+
+
+def _get_key_history(records: list[dict], kid: str) -> list[dict]:
+    """获取某个 Key 的全部历史记录（按时间升序）。"""
+    recs = [r for r in records if r["kid"] == kid]
+    recs.sort(key=lambda r: r["ts"])
+    return recs
+
+
+def _extract_balances_seq(history: list[dict]) -> list[float]:
+    """从历史记录中提取连续有效余额序列。"""
+    return [r["balance"] for r in history if r["balance"] is not None]
+
+
+def sparkline(values: list[float], length: int = 0) -> str:
+    """用 Unicode 字符绘制火花条。"""
+    if not values:
+        return ""
+    mn, mx = min(values), max(values)
+    n = len(_SPARK_CHARS)
+    if mx == mn:
+        bar = _SPARK_CHARS[n // 2] * len(values)
+    else:
+        rng = mx - mn
+        bar = "".join(
+            _SPARK_CHARS[min(int((v - mn) / rng * (n - 1)), n - 1)]
+            for v in values
+        )
+    if length and len(bar) < length:
+        bar = bar + " " * (length - len(bar))
+    return bar
+
+
+def _format_currency(provider_id: str, value: float) -> str:
+    """根据提供商格式化余额数值。"""
+    if provider_id == "openrouter":
+        return f"${value:.2f}"
+    return f"¥{value:.2f}"
+
+
+def _delta_text(current: float | None, previous: float | None) -> str:
+    """生成两行余额增减文字。"""
+    if current is None and previous is None:
+        return "—"
+    if previous is None:
+        return "（首次查询）"
+    if current is None:
+        return f"（上次 {previous:.2f}，本次失败）"
+    diff = current - previous
+    if abs(diff) < 0.001:
+        return "（持平）"
+    if diff > 0:
+        return f"↑ +{diff:.2f}"
+    return f"↓ {diff:.2f}"
+
+
+def _format_delta(current: float | None, previous: float | None, provider_id: str) -> str:
+    """生成带货币符号的变化描述。"""
+    if current is None and previous is None:
+        return "—"
+    if previous is None:
+        return "首次查询"
+    if current is None:
+        return f"上次 {_format_currency(provider_id, previous)}，本次失败"
+    diff = current - previous
+    if abs(diff) < 0.001:
+        return f"持平（{_format_currency(provider_id, previous)}）"
+    arrow = "📈" if diff > 0 else "📉"
+    return f"{arrow} {_format_currency(provider_id, previous)} → {_format_currency(provider_id, current)}（{'+' if diff > 0 else ''}{diff:.2f}）"
+
+
+# ============================================================
+# SVG 图表生成（零依赖）
+# ============================================================
+
+def _render_svg_chart(
+    series: dict[str, list[float]],
+    *,
+    title: str = "",
+    width: int = 500,
+    height: int = 220,
+    margin: dict | None = None,
+) -> str:
+    """
+    用纯 Python 生成 SVG 折线图。
+    series: {label: [balance, ...]}  — 每个 label 一条线
+    """
+    if margin is None:
+        margin = {"t": 30, "r": 20, "b": 40, "l": 55}
+    mt, mr, mb, ml = margin["t"], margin["r"], margin["b"], margin["l"]
+    pw = width - ml - mr  # plot width
+    ph = height - mt - mb  # plot height
+
+    # 收集全部数值
+    all_vals = [v for vals in series.values() for v in vals if v is not None]
+    if not all_vals:
+        return f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg"><text x="{width//2}" y="{height//2}" text-anchor="middle" fill="#888">暂无数据</text></svg>'
+
+    y_min = min(all_vals)
+    y_max = max(all_vals)
+    if y_max == y_min:
+        y_max += 1  # 避免除零
+
+    def to_svg(x_frac: float, val: float) -> tuple[float, float]:
+        sx = ml + x_frac * pw
+        sy = mt + ph - (val - y_min) / (y_max - y_min) * ph
+        return sx, sy
+
+    n = max(len(v) for v in series.values())
+    x_positions = [i / (n - 1) if n > 1 else 0.5 for i in range(n)]
+
+    colors = ["#4CAF50", "#2196F3", "#FF9800", "#E91E63", "#9C27B0", "#00BCD4", "#FF5722", "#607D8B"]
+
+    svg = [f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="11">']
+
+    # 背景
+    svg.append(f'<rect width="{width}" height="{height}" fill="#fafafa" rx="4"/>')
+
+    # Y 轴网格线 & 标签
+    y_ticks = 5
+    for i in range(y_ticks + 1):
+        frac = i / y_ticks
+        val = y_min + (y_max - y_min) * frac
+        yy = mt + ph - frac * ph
+        svg.append(f'<line x1="{ml}" y1="{yy:.1f}" x2="{ml + pw}" y2="{yy:.1f}" stroke="#e0e0e0" stroke-width="1"/>')
+        svg.append(f'<text x="{ml - 6}" y="{yy + 4}" text-anchor="end" fill="#666">{val:.2f}</text>')
+
+    # 图例
+    legend_x = ml
+    for ci, (label, vals) in enumerate(series.items()):
+        if ci > 0:
+            legend_x += 15
+        color = colors[ci % len(colors)]
+        lw = len(label) * 7 + 20
+        if legend_x + lw > ml + pw:
+            break
+        svg.append(f'<rect x="{legend_x}" y="{mt - 20}" width="10" height="10" fill="{color}" rx="2"/>')
+        svg.append(f'<text x="{legend_x + 14}" y="{mt - 11}" fill="#333" font-size="11">{label}</text>')
+        legend_x += lw
+
+    # 折线
+    for ci, (label, vals) in enumerate(series.items()):
+        color = colors[ci % len(colors)]
+        points = []
+        for i, v in enumerate(vals):
+            if v is None:
+                continue
+            sx, sy = to_svg(x_positions[i], v)
+            points.append(f"{sx:.1f},{sy:.1f}")
+        if len(points) >= 2:
+            svg.append(f'<polyline points="{" ".join(points)}" fill="none" stroke="{color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
+
+    # 数据点圆点 + 末位标签
+    for ci, (label, vals) in enumerate(series.items()):
+        color = colors[ci % len(colors)]
+        for i, v in enumerate(vals):
+            if v is None:
+                continue
+            sx, sy = to_svg(x_positions[i], v)
+            if i == len(vals) - 1:
+                svg.append(f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="3.5" fill="{color}" stroke="#fff" stroke-width="1.5"/>')
+                svg.append(f'<text x="{sx:.1f}" y="{sy - 8}" text-anchor="middle" fill="{color}" font-size="10" font-weight="bold">{v:.2f}</text>')
+            else:
+                svg.append(f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="2" fill="{color}"/>')
+
+    # 标题
+    if title:
+        svg.append(f'<text x="{ml + pw // 2}" y="16" text-anchor="middle" fill="#333" font-size="13" font-weight="bold">{title}</text>')
+
+    svg.append("</svg>")
+    return "\n".join(svg)
+
+
+def _build_trend_data(results: list[dict], history: list[dict]) -> dict[str, dict]:
+    """
+    构建每个 Key 的变化追踪数据。
+    返回: {key_id: {"current": float|None, "previous": float|None, "history": [float, ...], "result": dict}}
+    """
+    trend: dict[str, dict] = {}
+    for r in results:
+        kid = _key_id(r["key"])
+        balances = _extract_balances_seq(_get_key_history(history, kid))
+        current = _extract_num_balance(r)
+        # 当前值已在本次写入前的一批记录里，还没 append → 从 history 取上一次
+        previous = balances[-1] if balances else None
+        trend[kid] = {
+            "current": current,
+            "previous": previous,
+            "history": balances,  # 不含本次
+            "result": r,
+        }
+    return trend
 
 
 def query_balance(provider_id: str, api_key: str) -> dict:
@@ -314,8 +588,8 @@ def _sort_and_group(results: list[dict]) -> list[tuple[str, list[dict]]]:
 # 结果格式化
 # ============================================================
 
-def format_summary(results: list[dict]) -> str:
-    """生成汇总文本（控制台 + 文件用），按余额排序 + 服务商分组 + 速复制区。"""
+def format_summary(results: list[dict], history: list[dict] | None = None) -> str:
+    """生成汇总文本（控制台 + 文件用），按余额排序 + 服务商分组 + 余额变化 + 速复制区。"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ok_count = sum(1 for r in results if r["status"] == "ok")
     err_count = sum(1 for r in results if r["status"] == "error")
@@ -356,6 +630,28 @@ def format_summary(results: list[dict]) -> str:
                     err_msg = err_msg[:37] + "..."
                 lines.append(f"  #{idx:<2d}  {masked:<24s}  ❌ {err_msg}")
 
+    # ── 余额变化追踪 ──
+    if history is not None and history:
+        trend = _build_trend_data(results, history)
+        entries_with_history = [(kid, td) for kid, td in trend.items() if td["history"]]
+        if entries_with_history:
+            lines.append("")
+            lines.append("─" * W)
+            lines.append(f"{'余额变化追踪':^{W}}")
+            lines.append("─" * W)
+            lines.append("")
+            for kid, td in entries_with_history:
+                r = td["result"]
+                masked = mask_key(r["key"])
+                pid = r.get("provider_id", "")
+                cur = td["current"]
+                prev = td["previous"]
+                delta = _format_delta(cur, prev, pid)
+                spark = sparkline(td["history"] + ([cur] if cur is not None else []), length=0)
+                spark_str = f"  {spark}" if spark else ""
+                lines.append(f"  {masked:<24s}  {delta:<30s}{spark_str}")
+            lines.append("")
+
     # ── 速复制区（按服务商分组，可用/不可用分隔） ──
     lines.append("")
     lines.append("═" * W)
@@ -387,7 +683,7 @@ def format_summary(results: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def format_summary_md(results: list[dict]) -> str:
+def format_summary_md(results: list[dict], history: list[dict] | None = None, timestamp: str = "") -> str:
     """生成 Markdown 格式报告，更好的可读性。"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ok_count = sum(1 for r in results if r["status"] == "ok")
@@ -425,6 +721,56 @@ def format_summary_md(results: list[dict]) -> str:
                     err_msg = err_msg[:47] + "..."
                 md.append(f"| {idx} | `{masked}` | ❌ {err_msg} | - |")
         md.append("")
+
+    # ── 余额变化追踪 ──
+    if history is not None and history:
+        trend = _build_trend_data(results, history)
+        entries_with_history = [(kid, td) for kid, td in trend.items() if td["history"]]
+        if entries_with_history:
+            md.append("---")
+            md.append("")
+            md.append("## 📊 余额变化追踪")
+            md.append("")
+            md.append("| Key | Provider | 变化趋势 | 变化 |")
+            md.append("|-----|----------|---------|:----:|")
+            for kid, td in entries_with_history:
+                r = td["result"]
+                masked = mask_key(r["key"])
+                pid = r.get("provider_id", "")
+                cur = td["current"]
+                prev = td["previous"]
+                delta_text = _format_delta(cur, prev, pid)
+                spark = sparkline(td["history"] + ([cur] if cur is not None else []))
+                md.append(f"| `{masked}` | {r['provider']} | `{spark}` | {delta_text} |")
+            md.append("")
+
+    # ── SVG 余额趋势图 ──
+    if history is not None and history:
+        trend = _build_trend_data(results, history)
+        # 按 provider 分组绘制
+        from collections import defaultdict
+        prov_groups: dict[str, list[tuple[str, list[float]]]] = defaultdict(list)
+        for kid, td in trend.items():
+            r = td["result"]
+            vals = td["history"] + ([td["current"]] if td["current"] is not None else [])
+            if len(vals) >= 2:
+                prov_groups[r["provider"]].append((mask_key(r["key"]), vals))
+        if prov_groups:
+            md.append("---")
+            md.append("")
+            md.append("## 📈 余额趋势图")
+            md.append("")
+            for prov, series in prov_groups.items():
+                chart_title = f"{prov} — 余额趋势"
+                chart_data = {label: vals for label, vals in series}
+                svg = _render_svg_chart(chart_data, title=chart_title)
+                chart_filename = f"balance_chart_{timestamp}_{prov.replace(' ', '_').replace('(', '').replace(')', '')}.svg" if timestamp else f"balance_chart_{prov.replace(' ', '_')}.svg"
+                chart_path = Path(chart_filename)
+                chart_path.write_text(svg, encoding="utf-8")
+                md.append(f"### {prov}")
+                md.append("")
+                md.append(f'<img src="{chart_filename}" alt="{prov} 余额趋势" />')
+                md.append("")
 
     # ── 速复制区（按服务商分组，可用/不可用分隔） ──
     md.append("---")
@@ -629,9 +975,13 @@ def main():
     # 输出
     # ============================================================
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    timestamp_hr = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    # 加载历史记录
+    history = load_history()
 
     # 文本版（控制台 + .txt）
-    report_txt = format_summary(results)
+    report_txt = format_summary(results, history)
     print("\n" + report_txt)
 
     txt_file = f"balance_report_{timestamp}.txt"
@@ -639,10 +989,15 @@ def main():
     print(f"\n📄 文本报告: {txt_file}")
 
     # Markdown 版（.md）
-    report_md = format_summary_md(results)
+    report_md = format_summary_md(results, history, timestamp)
     md_file = f"balance_report_{timestamp}.md"
     Path(md_file).write_text(report_md, encoding="utf-8")
     print(f"📝 Markdown 报告: {md_file}")
+
+    # 保存历史记录
+    append_history(history, results)
+    save_history(history)
+    print(f"📊 余额历史: {HISTORY_FILE}")
 
 
 if __name__ == "__main__":
