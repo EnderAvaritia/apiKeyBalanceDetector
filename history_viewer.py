@@ -228,7 +228,9 @@ def build_chart(records: list[dict], output_path: str = ""):
         print(f"[OK] 图表已保存: {output_path}")
     else:
         now = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = f"history_chart_{now}.svg"
+        reports_dir = Path("reports")
+        reports_dir.mkdir(exist_ok=True)
+        out = str(reports_dir / f"history_chart_{now}.svg")
         Path(out).write_text(svg, encoding="utf-8")
         print(f"[OK] 图表已保存: {out}")
 

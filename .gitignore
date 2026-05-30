@@ -1,6 +1,5 @@
 __pycache__/
 *.pyc
-balance_report_*.txt
-balance_report_*.md
+reports/
 testKeys.txt
 keys.txt

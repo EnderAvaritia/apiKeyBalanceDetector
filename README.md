@@ -99,12 +99,13 @@ sk-jkl-all-good-key
 ══════════════════════════════════════════════════════
 ```
 
-同时会在当前目录生成两份报告：
+同时会在当前目录生成两份报告（存放于 `reports/` 目录下）：
 
 | 文件 | 格式 | 说明 |
 |------|------|------|
-| `balance_report_20260529_143022.txt` | 纯文本 | 控制台同款，终端友好 |
-| `balance_report_20260529_143022.md` | Markdown | 表格排版 + SVG 趋势图，GitHub/IDE 预览更清晰 |
+| `reports/balance_report_*.txt` | 纯文本 | 控制台同款，终端友好 |
+| `reports/balance_report_*.md` | Markdown | 表格排版 + SVG 趋势图，GitHub/IDE 预览更清晰 |
+| `reports/balance_chart_*.svg` | SVG | 余额趋势折线图，自动嵌入 MD 报告 |
 | `balance_history.json` | JSON | 历史记录数据库（自动维护，每次运行追加） |
 
 ## 余额历史追踪
@@ -132,7 +133,7 @@ sk-jkl-all-good-key
 
 ## 📈 余额趋势图
 ### DeepSeek
-<img src="balance_chart_20260531_010230_DeepSeek.svg" />
+<img src="reports/balance_chart_20260531_010230_DeepSeek.svg" />
 ```
 
 ### 历史查看器
@@ -178,7 +179,9 @@ python backfill_history.py --dry-run      # 先预览，不写入
 ├── keys.txt                        # 配置文件（需自行创建）
 ├── keys.example.txt                # 配置文件示例
 ├── balance_history.json            # 历史记录数据库（自动生成）
-├── balance_report_*.txt            # 纯文本报告（自动生成）
-├── balance_report_*.md             # Markdown 报告（自动生成）
-└── balance_chart_*.svg             # 趋势图（自动生成）
+├── reports/                        # 报告输出目录
+│   ├── balance_report_*.txt        # 纯文本报告（自动生成）
+│   ├── balance_report_*.md         # Markdown 报告（自动生成）
+│   └── balance_chart_*.svg         # 趋势图（自动生成）
+└── ...
 ```

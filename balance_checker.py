@@ -158,6 +158,7 @@ import hashlib
 import json
 
 HISTORY_FILE = "balance_history.json"
+REPORTS_DIR = "reports"
 
 # Unicode 火花条字符（8 级）
 _SPARK_CHARS = "▁▂▃▄▅▆▇█"
@@ -765,11 +766,12 @@ def format_summary_md(results: list[dict], history: list[dict] | None = None, ti
                 chart_data = {label: vals for label, vals in series}
                 svg = _render_svg_chart(chart_data, title=chart_title)
                 chart_filename = f"balance_chart_{timestamp}_{prov.replace(' ', '_').replace('(', '').replace(')', '')}.svg" if timestamp else f"balance_chart_{prov.replace(' ', '_')}.svg"
-                chart_path = Path(chart_filename)
+                chart_path = Path(REPORTS_DIR) / chart_filename
+                chart_path.parent.mkdir(parents=True, exist_ok=True)
                 chart_path.write_text(svg, encoding="utf-8")
                 md.append(f"### {prov}")
                 md.append("")
-                md.append(f'<img src="{chart_filename}" alt="{prov} 余额趋势" />')
+                md.append(f'<img src="{REPORTS_DIR}/{chart_filename}" alt="{prov} 余额趋势" />')
                 md.append("")
 
     # ── 速复制区（按服务商分组，可用/不可用分隔） ──
@@ -980,17 +982,20 @@ def main():
     # 加载历史记录
     history = load_history()
 
+    # 确保报告目录存在
+    Path(REPORTS_DIR).mkdir(exist_ok=True)
+
     # 文本版（控制台 + .txt）
     report_txt = format_summary(results, history)
     print("\n" + report_txt)
 
-    txt_file = f"balance_report_{timestamp}.txt"
+    txt_file = f"{REPORTS_DIR}/balance_report_{timestamp}.txt"
     Path(txt_file).write_text(report_txt, encoding="utf-8")
     print(f"\n📄 文本报告: {txt_file}")
 
     # Markdown 版（.md）
     report_md = format_summary_md(results, history, timestamp)
-    md_file = f"balance_report_{timestamp}.md"
+    md_file = f"{REPORTS_DIR}/balance_report_{timestamp}.md"
     Path(md_file).write_text(report_md, encoding="utf-8")
     print(f"📝 Markdown 报告: {md_file}")
 
