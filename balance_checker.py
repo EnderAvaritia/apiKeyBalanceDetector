@@ -135,6 +135,19 @@ def detect_provider(api_key: str) -> str | None:
 # 查询逻辑
 # ============================================================
 
+def mask_key(key: str, keep_head: int = 6, keep_tail: int = 4) -> str:
+    """
+    对 API Key 做脱敏处理，只保留首尾若干字符，中间用 *** 替代。
+    短 Key（长度 ≤ keep_head + keep_tail）则只保留首尾各一半字符。
+    """
+    key = key.strip()
+    if len(key) <= keep_head + keep_tail:
+        # 太短，只保留首尾各一半
+        mid = len(key) // 2
+        return key[:mid] + "***" + key[mid:]
+    return key[:keep_head] + "***" + key[-keep_tail:]
+
+
 def query_balance(provider_id: str, api_key: str) -> dict:
     """查询单个 Key 的余额，返回结果 dict。"""
     cfg = PROVIDERS[provider_id]
@@ -331,7 +344,7 @@ def format_summary(results: list[dict]) -> str:
             lines.append(f"── {provider_label} ─{'─' * (W - 6 - len(provider_label))}")
 
         for idx, r in enumerate(items, 1):
-            masked = r["key"]
+            masked = mask_key(r["key"])
             if r["status"] == "ok":
                 summary = _one_line_summary(r)
                 elapsed = r.get("elapsed", "?")
@@ -401,7 +414,7 @@ def format_summary_md(results: list[dict]) -> str:
         md.append("| # | Key | 余额状态 | 耗时 |")
         md.append("|---|-----|---------|:----:|")
         for idx, r in enumerate(items, 1):
-            masked = r["key"]
+            masked = mask_key(r["key"])
             if r["status"] == "ok":
                 summary = _one_line_summary(r)
                 elapsed = f"{r.get('elapsed', '?')}s"
@@ -578,7 +591,7 @@ def main():
         elif provider in PROVIDERS:
             queries.append((provider, key))
         else:
-            print(f"⚠  未知提供商 '{provider}'，跳过 {key}")
+            print(f"⚠  未知提供商 '{provider}'，跳过 {mask_key(key)}")
             print(f"   支持的: {', '.join(PROVIDERS.keys())}")
 
     if not queries:

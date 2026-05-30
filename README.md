@@ -57,6 +57,11 @@ python balance_checker.py
 python balance_checker.py my_keys.txt
 ```
 
+## 安全说明
+
+> 报告中 **检测结果详情区** 的 Key 会自动脱敏（保留前 6 位 + `***` + 后 4 位），
+> 仅在 **速复制区** 展示完整 Key，方便直接复制使用。
+
 ## 输出示例
 
 ```
@@ -68,12 +73,12 @@ python balance_checker.py my_keys.txt
 ──────────────────────────────────────────────────────
 
 ── DeepSeek ──────────────────────────────────────────
-  #1   sk-abc-test-key-xyz        余额: ¥8.66  ✅         0.42s
-  #2   sk-def-zero-bal-key        余额: ¥0.00  ❌         0.35s
-  #3   sk-ghi-failed-key          ❌ Unauthorized
+  #1   sk-abc***-xyz              余额: ¥8.66  ✅         0.42s
+  #2   sk-def***-key              余额: ¥0.00  ❌         0.35s
+  #3   sk-ghi***-key              ❌ Unauthorized
 
 ── 硅基流动 (SiliconFlow) ────────────────────────────────
-  #1   sk-jkl-all-good-key        余额: ¥88.88  ✅         0.31s
+  #1   sk-jkl***-key              余额: ¥88.88  ✅         0.31s
 
 ══════════════════════════════════════════════════════
 
