@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
 reports/
+最新报告.*
 testKeys.txt
 keys.txt

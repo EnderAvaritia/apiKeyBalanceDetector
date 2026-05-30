@@ -991,12 +991,14 @@ def main():
 
     txt_file = f"{REPORTS_DIR}/balance_report_{timestamp}.txt"
     Path(txt_file).write_text(report_txt, encoding="utf-8")
+    Path("最新报告.txt").write_text(report_txt, encoding="utf-8")
     print(f"\n📄 文本报告: {txt_file}")
 
     # Markdown 版（.md）
     report_md = format_summary_md(results, history, timestamp)
     md_file = f"{REPORTS_DIR}/balance_report_{timestamp}.md"
     Path(md_file).write_text(report_md, encoding="utf-8")
+    Path("最新报告.md").write_text(report_md, encoding="utf-8")
     print(f"📝 Markdown 报告: {md_file}")
 
     # 保存历史记录
