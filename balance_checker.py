@@ -305,8 +305,10 @@ def _format_delta(current: float | None, previous: float | None, provider_id: st
 # ============================================================
 
 def _render_svg_chart(
-    series: dict[str, list[float]],
+    series: dict[str, list[float | None]],
     *,
+    timestamps: list[str] | None = None,
+    time_weight: float = 2.0,
     title: str = "",
     width: int = 500,
     height: int = 220,
@@ -315,9 +317,12 @@ def _render_svg_chart(
     """
     用纯 Python 生成 SVG 折线图。
     series: {label: [balance, ...]}  — 每个 label 一条线
+    timestamps: 时间标签列表（和 series 最大长度对齐），提供后会在 X 轴显示时间
+    time_weight: 时间轴压缩指数，1.0=线性均匀，>1 压缩老数据给近期更多空间，默认 2.0
     """
+    has_ts = timestamps is not None and len(timestamps) > 0
     if margin is None:
-        margin = {"t": 30, "r": 20, "b": 40, "l": 55}
+        margin = {"t": 30, "r": 20, "b": 55 if has_ts else 40, "l": 55}
     mt, mr, mb, ml = margin["t"], margin["r"], margin["b"], margin["l"]
     pw = width - ml - mr  # plot width
     ph = height - mt - mb  # plot height
@@ -337,8 +342,13 @@ def _render_svg_chart(
         sy = mt + ph - (val - y_min) / (y_max - y_min) * ph
         return sx, sy
 
-    n = max(len(v) for v in series.values())
-    x_positions = [i / (n - 1) if n > 1 else 0.5 for i in range(n)]
+    n = len(timestamps) if has_ts else max(len(v) for v in series.values())
+    # 时间轴位置：time_weight 控制压缩程度
+    raw = [i / (n - 1) if n > 1 else 0.5 for i in range(n)]
+    if has_ts and time_weight != 1.0:
+        x_positions = [v ** time_weight for v in raw]
+    else:
+        x_positions = raw
 
     colors = ["#4CAF50", "#2196F3", "#FF9800", "#E91E63", "#9C27B0", "#00BCD4", "#FF5722", "#607D8B"]
 
@@ -356,6 +366,15 @@ def _render_svg_chart(
         svg.append(f'<line x1="{ml}" y1="{yy:.1f}" x2="{ml + pw}" y2="{yy:.1f}" stroke="#e0e0e0" stroke-width="1"/>')
         svg.append(f'<text x="{ml - 6}" y="{yy + 4}" text-anchor="end" fill="#666">{val:.2f}</text>')
 
+    # X 轴时间标签
+    if has_ts:
+        step = max(1, n // 6)
+        for i in range(0, n, step):
+            ts = timestamps[i]
+            formatted = ts[5:16].replace("T", " ")  # "MM-DD HH:MM"
+            sx = ml + x_positions[i] * pw
+            svg.append(f'<text x="{sx:.1f}" y="{mt + ph + 14}" text-anchor="end" fill="#666" font-size="9" transform="rotate(-30, {sx:.1f}, {mt + ph + 14})">{formatted}</text>')
+
     # 图例
     legend_x = ml
     for ci, (label, vals) in enumerate(series.items()):
@@ -369,26 +388,33 @@ def _render_svg_chart(
         svg.append(f'<text x="{legend_x + 14}" y="{mt - 11}" fill="#333" font-size="11">{label}</text>')
         legend_x += lw
 
-    # 折线
+    # 折线（遇 None 断线）
     for ci, (label, vals) in enumerate(series.items()):
         color = colors[ci % len(colors)]
-        points = []
+        segments: list[list[str]] = [[]]
         for i, v in enumerate(vals):
             if v is None:
+                if segments[-1]:
+                    segments.append([])
                 continue
             sx, sy = to_svg(x_positions[i], v)
-            points.append(f"{sx:.1f},{sy:.1f}")
-        if len(points) >= 2:
-            svg.append(f'<polyline points="{" ".join(points)}" fill="none" stroke="{color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
+            segments[-1].append(f"{sx:.1f},{sy:.1f}")
+        for seg in segments:
+            if len(seg) >= 2:
+                svg.append(f'<polyline points="{" ".join(seg)}" fill="none" stroke="{color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
 
     # 数据点圆点 + 末位标签
     for ci, (label, vals) in enumerate(series.items()):
         color = colors[ci % len(colors)]
+        last_actual_idx = -1
+        for i, v in enumerate(vals):
+            if v is not None:
+                last_actual_idx = i
         for i, v in enumerate(vals):
             if v is None:
                 continue
             sx, sy = to_svg(x_positions[i], v)
-            if i == len(vals) - 1:
+            if i == last_actual_idx:
                 svg.append(f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="3.5" fill="{color}" stroke="#fff" stroke-width="1.5"/>')
                 svg.append(f'<text x="{sx:.1f}" y="{sy - 8}" text-anchor="middle" fill="{color}" font-size="10" font-weight="bold">{v:.2f}</text>')
             else:
@@ -750,29 +776,52 @@ def format_summary_md(results: list[dict], history: list[dict] | None = None, ti
         trend = _build_trend_data(results, history)
         # 按 provider 分组绘制
         from collections import defaultdict
-        prov_groups: dict[str, list[tuple[str, list[float]]]] = defaultdict(list)
+        prov_groups: dict[str, list[tuple[str, str, list[float]]]] = defaultdict(list)  # (kid, masked_key, vals)
         for kid, td in trend.items():
             r = td["result"]
             vals = td["history"] + ([td["current"]] if td["current"] is not None else [])
             if len(vals) >= 2:
-                prov_groups[r["provider"]].append((mask_key(r["key"]), vals))
+                prov_groups[r["provider"]].append((kid, mask_key(r["key"]), vals))
         if prov_groups:
             md.append("---")
             md.append("")
             md.append("## 📈 余额趋势图")
             md.append("")
-            for prov, series in prov_groups.items():
-                chart_title = f"{prov} — 余额趋势"
-                chart_data = {label: vals for label, vals in series}
-                svg = _render_svg_chart(chart_data, title=chart_title)
-                chart_filename = f"balance_chart_{timestamp}_{prov.replace(' ', '_').replace('(', '').replace(')', '')}.svg" if timestamp else f"balance_chart_{prov.replace(' ', '_')}.svg"
-                chart_path = Path(REPORTS_DIR) / chart_filename
-                chart_path.parent.mkdir(parents=True, exist_ok=True)
-                chart_path.write_text(svg, encoding="utf-8")
-                md.append(f"### {prov}")
-                md.append("")
-                md.append(f'<img src="{REPORTS_DIR}/{chart_filename}" alt="{prov} 余额趋势" />')
-                md.append("")
+            for prov, items in prov_groups.items():
+                # 收集该 provider 下所有 key 的完整时间戳（对齐时间轴）
+                all_key_ts: dict[str, list[str]] = {}
+                for kid, masked, _ in items:
+                    kid_recs = _get_key_history(history, kid)
+                    ts_list = [rec["ts"] for rec in kid_recs if rec["balance"] is not None]
+                    # 追加本次时间戳
+                    trend_entry = trend.get(kid)
+                    if trend_entry and trend_entry["current"] is not None:
+                        ts_list.append(datetime.now().isoformat(timespec="seconds"))
+                    all_key_ts[kid] = ts_list
+                # 所有 key 的合并时间轴
+                merged_ts = sorted(set(ts for tss in all_key_ts.values() for ts in tss))
+
+                chart_data: dict[str, list[float | None]] = {}
+                for kid, masked, vals in items:
+                    # 按合并时间轴重排，每时间点有值才能对齐
+                    kid_ts = all_key_ts.get(kid, [])
+                    kid_map = dict(zip(kid_ts, vals))
+                    # 长度必须和 merged_ts 一致，缺失位用 None 占位
+                    aligned: list[float | None] = [kid_map.get(ts) for ts in merged_ts]
+                    if sum(1 for v in aligned if v is not None) >= 2:
+                        chart_data[masked] = aligned
+
+                if chart_data:
+                    chart_title = f"{prov} — 余额趋势"
+                    svg = _render_svg_chart(chart_data, timestamps=merged_ts, title=chart_title)
+                    chart_filename = f"balance_chart_{timestamp}_{prov.replace(' ', '_').replace('(', '').replace(')', '')}.svg" if timestamp else f"balance_chart_{prov.replace(' ', '_')}.svg"
+                    chart_path = Path(REPORTS_DIR) / chart_filename
+                    chart_path.parent.mkdir(parents=True, exist_ok=True)
+                    chart_path.write_text(svg, encoding="utf-8")
+                    md.append(f"### {prov}")
+                    md.append("")
+                    md.append(f'<img src="{REPORTS_DIR}/{chart_filename}" alt="{prov} 余额趋势" />')
+                    md.append("")
 
     # ── 速复制区（按服务商分组，可用/不可用分隔） ──
     md.append("---")

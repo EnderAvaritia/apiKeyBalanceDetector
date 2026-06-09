@@ -209,19 +209,33 @@ def build_chart(records: list[dict], output_path: str = ""):
         if r["balance"] is not None:
             groups[r["kid"]].append(r)
 
-    # 每个 key 按时间排序
-    series: dict[str, list[float]] = {}
+    # 找出最新的时间点，只保留在该时间点有数据的 key
+    all_timestamps = sorted(set(r["ts"] for r in records if r["balance"] is not None))
+    if not all_timestamps:
+        print("(empty) 无有效余额数据")
+        return
+    latest_ts = all_timestamps[-1]
+
+    # 每个 key 按时间排序，只保留有最新时间点的 key
+    series: dict[str, list[float | None]] = {}
     for kid in sorted(groups.keys()):
         recs = sorted(groups[kid], key=lambda r: r["ts"])
+        # 跳过没有最新数据的 key
+        if recs[-1]["ts"] != latest_ts:
+            continue
         provider = recs[-1].get("provider", "?")
         label = f"{kid[:8]} ({provider[:12]})"
-        series[label] = [r["balance"] for r in recs if r["balance"] is not None]
+        # 按全部时间轴对齐，缺失位 None
+        val_by_ts = {r["ts"]: r["balance"] for r in recs if r["balance"] is not None}
+        aligned: list[float | None] = [val_by_ts.get(ts) for ts in all_timestamps]
+        if sum(1 for v in aligned if v is not None) >= 2:
+            series[label] = aligned
 
     if len(series) == 0:
         print("(empty) 无有效余额数据")
         return
 
-    svg = _render_svg_chart(series, title="API Key 余额历史趋势")
+    svg = _render_svg_chart(series, timestamps=all_timestamps, title="API Key 余额历史趋势")
 
     if output_path:
         Path(output_path).write_text(svg, encoding="utf-8")
